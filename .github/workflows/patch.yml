@@ -1,0 +1,195 @@
+name: Patch Release (Docker)
+
+on:
+  workflow_dispatch:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOCKERHUB_ORG_NAME: ${{ vars.DOCKERHUB_ORG_NAME || 'bitxeno' }}
+  GHCR_ORG_NAME: ${{ vars.GHCR_ORG_NAME || 'bitxeno' }}
+  IMAGE_NAME: openlist
+  IMAGE_NAME_DOCKERHUB: openlist
+  REGISTRY: ghcr.io
+  ARTIFACT_NAME: 'binaries_docker_release'
+  RELEASE_PLATFORMS: 'linux/amd64' ### Temporarily disable Docker builds for linux/s390x architectures for unknown reasons.
+  IMAGE_PUSH: ${{ github.event_name == 'push' }}
+  IMAGE_TAGS_BETA: |
+    type=ref,event=pr
+    type=ref,event=branch
+    type=raw,value=beta,enable={{is_default_branch}}
+
+jobs:
+  build_binary:
+    name: Build Binaries for Docker Release (Beta)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.0'
+
+      - name: Cache Musl
+        id: cache-musl
+        uses: actions/cache@v4
+        with:
+          path: build/musl-libs
+          key: docker-musl-libs-v2
+
+      - name: Download Musl Library
+        if: steps.cache-musl.outputs.cache-hit != 'true'
+        run: bash build.sh prepare docker-multiplatform
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout Frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.FRONTEND_REPO || 'OpenListTeam/OpenList-Frontend' }}
+          path: frontend-src
+          ref: rolling
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+          version: 10
+
+      - name: Build Frontend
+        env:
+          FRONTEND_PATCHES: ${{ vars.FRONTEND_PATCH }}
+        run: |
+          cd frontend-src
+          if [ -n "$FRONTEND_PATCHES" ]; then
+            echo "$FRONTEND_PATCHES" | while read -r line; do
+              # Remove carriage returns and leading/trailing whitespace
+              url=$(echo "$line" | tr -d '\r' | xargs)
+              if [ -n "$url" ]; then
+                echo "Applying patch: '$url'"
+                curl -fsSL "$url" | git apply -v
+              fi
+            done
+          fi
+          echo "Downloading latest i18n files..."
+          curl -fsSL "https://github.com/OpenListTeam/OpenList-Frontend/releases/latest/download/i18n.tar.gz" -o i18n.tar.gz
+          tar -zxvf i18n.tar.gz -C src/lang
+          rm i18n.tar.gz
+          chmod +x build.sh
+          ./build.sh --dev --compress  --skip-i18n
+          cd ..
+          rm -rf public/dist
+          mkdir -p public/dist
+          cp -r frontend-src/dist/* public/dist/
+
+      - name: Build go binary (beta)
+        run: |
+          # Setup Environment
+          export PATH=$PATH:$(pwd)/build/musl-libs/bin
+          export CGO_ENABLED=1
+          export GOOS=linux
+          export GOARCH=amd64
+          export CC=x86_64-linux-musl-gcc
+          
+          # Variables
+          appName="openlist"
+          builtAt="$(date +'%F %T %z')"
+          gitAuthor="The OpenList Projects Contributors <noreply@openlist.team>"
+          gitCommit=$(git log --pretty=format:"%h" -1)
+          version="beta"
+          webVersion="git-$(cd frontend-src && git rev-parse --short HEAD)"
+          
+          ldflags="-w -s \
+          -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.BuiltAt=$builtAt' \
+          -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.GitAuthor=$gitAuthor' \
+          -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.GitCommit=$gitCommit' \
+          -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.Version=$version' \
+          -X 'github.com/OpenListTeam/OpenList/v4/internal/conf.WebVersion=$webVersion' \
+          --extldflags '-static -fpic'"
+          
+          # Build
+          echo "Building for linux/amd64..."
+          go build -o build/linux/amd64/"$appName" -ldflags="$ldflags" -tags=jsoniter .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          overwrite: true
+          path: |
+            build/
+            !build/*.tgz
+            !build/musl-libs/**
+
+  release_docker:
+    needs: build_binary
+    name: Release Docker image (Beta)
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    strategy:
+      matrix:
+        image: ["latest"]
+        include:
+          - image: "latest"
+            base_image_tag: "base"
+            build_arg: ""
+            tag_favor: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: 'build/'
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        if: env.IMAGE_PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.GHCR_ORG_NAME }}/${{ env.IMAGE_NAME }}
+          tags: ${{ env.IMAGE_TAGS_BETA }}
+          flavor: |
+            ${{ matrix.tag_favor }}
+
+      - name: Build and push
+        id: docker_build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ci
+          push: ${{ env.IMAGE_PUSH == 'true' }}
+          build-args: |
+            BASE_IMAGE_TAG=${{ matrix.base_image_tag }}
+            ${{ matrix.build_arg }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ env.RELEASE_PLATFORMS }}
