@@ -415,15 +415,53 @@ type CapacityResp struct {
 	ResMessage        string `json:"res_message"`
 	Account           string `json:"account"`
 	CloudCapacityInfo struct {
-		FreeSize     int64  `json:"freeSize"`
-		MailUsedSize uint64 `json:"mail189UsedSize"`
-		TotalSize    uint64 `json:"totalSize"`
-		UsedSize     uint64 `json:"usedSize"`
+		FreeSize     int64 `json:"freeSize"`
+		MailUsedSize int64 `json:"mail189UsedSize"`
+		TotalSize    int64 `json:"totalSize"`
+		UsedSize     int64 `json:"usedSize"`
 	} `json:"cloudCapacityInfo"`
 	FamilyCapacityInfo struct {
-		FreeSize  int64  `json:"freeSize"`
-		TotalSize uint64 `json:"totalSize"`
-		UsedSize  uint64 `json:"usedSize"`
+		FreeSize  int64 `json:"freeSize"`
+		TotalSize int64 `json:"totalSize"`
+		UsedSize  int64 `json:"usedSize"`
 	} `json:"familyCapacityInfo"`
 	TotalSize uint64 `json:"totalSize"`
+}
+
+type RenameResp struct {
+	ResMsg      string `json:"res_message"`
+	CreateDate  Time   `json:"createDate"`
+	FileCate    int    `json:"fileCata"`
+	ID          String `json:"id"`
+	LastOpTime  Time   `json:"lastOpTime"`
+	MD5         string `json:"md5"`
+	MediaType   int    `json:"mediaType"`
+	Name        string `json:"name"`
+	Oeientation int    `json:"orientation"`
+	ParentID    int64  `json:"parentId"`
+	Rev         string `json:"rev"`
+	Size        int64  `json:"size"`
+	ResCode     any    `json:"res_code"` // int or string
+}
+
+func (r *RenameResp) toFile(f *Cloud189File) *Cloud189File {
+	return &Cloud189File{
+		ID:         r.ID,
+		Name:       r.Name,
+		Size:       r.Size,
+		Md5:        r.MD5,
+		LastOpTime: r.LastOpTime,
+		CreateDate: r.CreateDate,
+		Icon:       f.Icon,
+	}
+}
+
+func (r *RenameResp) toFolder() *Cloud189Folder {
+	return &Cloud189Folder{
+		ID:         r.ID,
+		Name:       r.Name,
+		ParentID:   r.ParentID,
+		LastOpTime: r.LastOpTime,
+		CreateDate: r.CreateDate,
+	}
 }
