@@ -2,10 +2,10 @@ package _115
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"sync"
 
-	"github.com/OpenListTeam/OpenList/v4/drivers/base"
 	"github.com/OpenListTeam/OpenList/v4/internal/driver"
 	"github.com/OpenListTeam/OpenList/v4/internal/model"
 	streamPkg "github.com/OpenListTeam/OpenList/v4/internal/stream"
@@ -15,6 +15,16 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/time/rate"
 )
+
+type setUATransport struct {
+	base http.RoundTripper
+	ua   string
+}
+
+func (t *setUATransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	req.Header.Set("User-Agent", t.ua)
+	return t.base.RoundTrip(req)
+}
 
 type Pan115 struct {
 	model.Storage
@@ -69,10 +79,16 @@ func (d *Pan115) Link(ctx context.Context, file model.Obj, args model.LinkArgs) 
 		return nil, err
 	}
 	userAgent := args.Header.Get("User-Agent")
+	var downloadInfo *driver115.DownloadInfo
+	var err error
 	if userAgent == "" {
-		userAgent = base.UserAgent
+		origTransport := d.client.Client.GetClient().Transport
+		d.client.Client.GetClient().Transport = &setUATransport{base: origTransport, ua: userAgent}
+		defer func() {
+			d.client.Client.GetClient().Transport = origTransport
+		}()
 	}
-	downloadInfo, err := d.client.DownloadWithUA(file.(*FileObj).PickCode, userAgent)
+	downloadInfo, err = d.client.DownloadWithUA(file.(*FileObj).PickCode, userAgent)
 	if err != nil {
 		return nil, err
 	}
