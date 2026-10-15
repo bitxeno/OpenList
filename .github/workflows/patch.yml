@@ -52,7 +52,7 @@ jobs:
         with:
           repository: ${{ vars.FRONTEND_REPO || 'OpenListTeam/OpenList-Frontend' }}
           path: frontend-src
-          ref: rolling
+          ref: ${{ vars.FRONTEND_REF || 'main' }}
 
       - name: Setup Node
         uses: actions/setup-node@v6
